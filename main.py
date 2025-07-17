@@ -535,15 +535,16 @@ async def handle_feature_callback(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     
-    feature = query.data.split('_')[1]  # feature_invert -> invert
+    # Parse the full callback data to handle multi-part features
+    callback_parts = query.data.split('_')
     
-    if feature == "invert":
+    if query.data == "feature_invert":
         # Delete the feature selection message
         await query.delete_message()
         # Process invert directly
         await process_pdf(update, context, "invert")
     
-    elif feature == "layout":
+    elif query.data == "feature_layout":
         # Show layout selection
         keyboard = await create_layout_selection_keyboard()
         await query.edit_message_text(
@@ -551,16 +552,15 @@ async def handle_feature_callback(update: Update, context: ContextTypes.DEFAULT_
             reply_markup=keyboard
         )
     
-    elif feature == "invert_layout":
-        if len(query.data.split('_')) > 2 and query.data.split('_')[2] == "layout":
-            # This is invert+layout
-            keyboard = await create_layout_selection_keyboard()
-            await query.edit_message_text(
-                "🎨📐 Choose layout for invert + layout processing:",
-                reply_markup=keyboard
-            )
-            # Store that this is an invert+layout operation
-            context.user_data['operation_type'] = 'invert_layout'
+    elif query.data == "feature_invert_layout":
+        # This is invert+layout
+        keyboard = await create_layout_selection_keyboard()
+        await query.edit_message_text(
+            "🎨📐 Choose layout for invert + layout processing:",
+            reply_markup=keyboard
+        )
+        # Store that this is an invert+layout operation
+        context.user_data['operation_type'] = 'invert_layout'
 
 async def handle_layout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle layout selection callback"""
