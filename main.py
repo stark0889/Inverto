@@ -97,6 +97,29 @@ class PDFProcessor:
         # Use high-quality JPEG
         image.save(file_path, "JPEG", quality=95, optimize=True, progressive=True)
         return file_path
+
+    async def convert_pdf_to_images_safely(self, pdf_path: str, status_msg, update, context):
+        """Safely convert PDF to images with error handling and DPI optimization"""
+        try:
+            # Check file size first
+            file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
+            if file_size_mb > 10:  # For large files, use lower DPI
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📄 Large file detected, optimizing processing...")
+                images = convert_from_path(pdf_path, dpi=150)
+            else:
+                images = convert_from_path(pdf_path, dpi=200)
+            return images
+        except Exception as e:
+            logger.error(f"Error converting PDF: {e}")
+            # Fallback to lower DPI if any issues
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "⚠️ Adjusting quality for better compatibility...")
+            try:
+                images = convert_from_path(pdf_path, dpi=150)
+                return images
+            except Exception as e2:
+                logger.error(f"Error converting PDF at 150 DPI: {e2}")
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "❌ Error processing PDF. File may be corrupted or too complex.")
+                raise Exception("Unable to process PDF file")
     
     async def invert_pdf_colors(self, update: Update, context: ContextTypes.DEFAULT_TYPE, pdf_path: str) -> str:
         """Invert colors of a PDF file and return the path to the inverted PDF"""
@@ -104,8 +127,8 @@ class PDFProcessor:
             # Status: Starting conversion
             status_msg = await self.send_status_message(update, context, "📄 Extracting pages from PDF...", ChatAction.TYPING)
             
-            # Convert PDF to images with high DPI for better quality
-            images = convert_from_path(pdf_path, dpi=300)
+            # Convert PDF to images safely
+            images = await self.convert_pdf_to_images_safely(pdf_path, status_msg, update, context)
             
             # Status: Pages detected
             await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🔢 Total pages detected: {len(images)}")
@@ -184,8 +207,8 @@ class PDFProcessor:
             # Status: Starting conversion
             status_msg = await self.send_status_message(update, context, "📄 Extracting pages from PDF...", ChatAction.TYPING)
             
-            # Convert PDF to images with high DPI for better quality
-            images = convert_from_path(pdf_path, dpi=300)
+            # Convert PDF to images safely
+            images = await self.convert_pdf_to_images_safely(pdf_path, status_msg, update, context)
             
             # Status: Pages detected
             await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🔢 Total pages detected: {len(images)}")
@@ -307,8 +330,8 @@ class PDFProcessor:
             # Status: Starting conversion
             status_msg = await self.send_status_message(update, context, "📄 Extracting pages from PDF...", ChatAction.TYPING)
             
-            # Convert PDF to images with high DPI for better quality
-            images = convert_from_path(pdf_path, dpi=300)
+            # Convert PDF to images safely
+            images = await self.convert_pdf_to_images_safely(pdf_path, status_msg, update, context)
             
             # Status: Pages detected
             await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🔢 Total pages detected: {len(images)}")
