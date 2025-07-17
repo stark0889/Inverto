@@ -95,3 +95,4 @@ nohup: ignoring input
 2025-07-17 04:01:52,372 - httpx - INFO - HTTP Request: GET https://api.telegram.org/file/bot7598007399%3AAAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/documents/file_2.pdf "HTTP/1.1 200 OK"
 2025-07-17 04:01:54,489 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/sendDocument "HTTP/1.1 200 OK"
 2025-07-17 04:01:54,750 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/deleteMessage "HTTP/1.1 200 OK"
+2025-07-17 04:02:00,648 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
