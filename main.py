@@ -31,29 +31,69 @@ class PDFProcessor:
             shutil.rmtree(self.temp_dir)
     
     async def send_status_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message: str, action: str = None):
-        """Send status message and optionally set chat action"""
+        """Send initial status message and optionally set chat action"""
         if action:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=action)
         
         # Send status message
         status_msg = await update.effective_message.reply_text(message)
-        await asyncio.sleep(1)  # Brief pause for user to read
+        await asyncio.sleep(0.5)  # Brief pause for user to read
         return status_msg
+    
+    async def update_status_message(self, context: ContextTypes.DEFAULT_TYPE, message_id: int, chat_id: int, new_text: str):
+        """Update existing status message"""
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=new_text
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update status message: {e}")
+    
+    def compress_images_for_pdf(self, images, max_size_mb=20):
+        """Compress images to fit within file size limit"""
+        # Calculate target quality based on number of pages
+        num_pages = len(images)
+        if num_pages > 200:
+            quality = 30
+        elif num_pages > 100:
+            quality = 50
+        elif num_pages > 50:
+            quality = 70
+        else:
+            quality = 85
+        
+        compressed_images = []
+        for image in images:
+            # Convert to RGB if not already
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Compress image
+            output = BytesIO()
+            image.save(output, format='JPEG', quality=quality, optimize=True)
+            output.seek(0)
+            compressed_image = Image.open(output)
+            compressed_images.append(compressed_image)
+        
+        return compressed_images
     
     async def invert_pdf_colors(self, update: Update, context: ContextTypes.DEFAULT_TYPE, pdf_path: str) -> str:
         """Invert colors of a PDF file and return the path to the inverted PDF"""
         try:
             # Status: Starting conversion
-            await self.send_status_message(update, context, "📄 Extracting pages from PDF...", ChatAction.TYPING)
+            status_msg = await self.send_status_message(update, context, "📄 Extracting pages from PDF...", ChatAction.TYPING)
             
             # Convert PDF to images
             images = convert_from_path(pdf_path, dpi=150)
             
             # Status: Pages detected
-            await self.send_status_message(update, context, f"🔢 Total pages detected: {len(images)}")
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🔢 Total pages detected: {len(images)}")
+            await asyncio.sleep(0.5)
             
             # Status: Starting color inversion
-            await self.send_status_message(update, context, "🎨 Inverting colors on each page...", ChatAction.TYPING)
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🎨 Inverting colors: 0/{len(images)} pages...")
             
             # Invert colors of each image
             inverted_images = []
@@ -66,27 +106,52 @@ class PDFProcessor:
                 inverted_image = ImageOps.invert(image)
                 inverted_images.append(inverted_image)
                 
-                # Update progress for large PDFs
-                if len(images) > 5 and (i + 1) % 5 == 0:
-                    await self.send_status_message(update, context, f"🎨 Processed {i + 1}/{len(images)} pages...")
+                # Update progress every 10 pages or for small PDFs every 5 pages
+                update_interval = 5 if len(images) <= 50 else 10
+                if (i + 1) % update_interval == 0 or i == len(images) - 1:
+                    await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🎨 Inverting colors: {i + 1}/{len(images)} pages...")
             
             # Status: Image transformation
-            await self.send_status_message(update, context, "🧪 Applying image transformation...", ChatAction.TYPING)
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "🧪 Applying image transformation...")
+            await asyncio.sleep(0.5)
+            
+            # Compress images if needed
+            if len(images) > 50:
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 Compressing images for optimal file size...")
+                inverted_images = self.compress_images_for_pdf(inverted_images)
             
             # Save inverted images to temporary files
             temp_image_paths = []
             for i, img in enumerate(inverted_images):
-                temp_img_path = os.path.join(self.temp_dir, f"inverted_page_{i}.png")
-                img.save(temp_img_path, "PNG")
+                temp_img_path = os.path.join(self.temp_dir, f"inverted_page_{i}.jpg")
+                img.save(temp_img_path, "JPEG", quality=85, optimize=True)
                 temp_image_paths.append(temp_img_path)
             
             # Status: Reassembling PDF
-            await self.send_status_message(update, context, "🧩 Reassembling pages into new PDF...", ChatAction.TYPING)
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "🧩 Reassembling pages into new PDF...")
             
             # Convert images back to PDF
             output_pdf_path = os.path.join(self.temp_dir, "inverted_output.pdf")
             with open(output_pdf_path, "wb") as f:
                 f.write(img2pdf.convert(temp_image_paths))
+            
+            # Check file size
+            file_size_mb = os.path.getsize(output_pdf_path) / (1024 * 1024)
+            if file_size_mb > 45:  # Telegram limit is 50MB, leave some buffer
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 File too large, applying additional compression...")
+                # Apply more aggressive compression
+                inverted_images = self.compress_images_for_pdf(inverted_images, max_size_mb=45)
+                temp_image_paths = []
+                for i, img in enumerate(inverted_images):
+                    temp_img_path = os.path.join(self.temp_dir, f"inverted_page_{i}.jpg")
+                    img.save(temp_img_path, "JPEG", quality=60, optimize=True)
+                    temp_image_paths.append(temp_img_path)
+                
+                with open(output_pdf_path, "wb") as f:
+                    f.write(img2pdf.convert(temp_image_paths))
+            
+            # Update final status
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "✅ PDF processing complete!")
             
             return output_pdf_path
             
@@ -98,13 +163,14 @@ class PDFProcessor:
         """Create N-up layout PDF with specified orientation"""
         try:
             # Status: Starting conversion
-            await self.send_status_message(update, context, "📄 Extracting pages from PDF...", ChatAction.TYPING)
+            status_msg = await self.send_status_message(update, context, "📄 Extracting pages from PDF...", ChatAction.TYPING)
             
             # Convert PDF to images
             images = convert_from_path(pdf_path, dpi=150)
             
             # Status: Pages detected
-            await self.send_status_message(update, context, f"🔢 Total pages detected: {len(images)}")
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🔢 Total pages detected: {len(images)}")
+            await asyncio.sleep(0.5)
             
             # Define layout configurations
             layout_configs = {
@@ -133,7 +199,8 @@ class PDFProcessor:
                 a4_width, a4_height = 1240, 1754
             
             # Status: Processing layout
-            await self.send_status_message(update, context, f"📐 Creating {layout_type} layout in {orientation} orientation...", ChatAction.TYPING)
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"📐 Creating {layout_type} layout in {orientation} orientation...")
+            await asyncio.sleep(0.5)
             
             # Calculate dimensions for each page on the sheet
             page_width = a4_width // grid_cols
@@ -158,9 +225,9 @@ class PDFProcessor:
                 current_sheet.paste(image, (x, y))
                 pages_on_current_sheet += 1
                 
-                # Update progress for large PDFs
-                if len(images) > 10 and (i + 1) % 10 == 0:
-                    await self.send_status_message(update, context, f"📐 Processed {i + 1}/{len(images)} pages...")
+                # Update progress every 20 pages
+                if (i + 1) % 20 == 0 or i == len(images) - 1:
+                    await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"📐 Processing layout: {i + 1}/{len(images)} pages...")
                 
                 # If sheet is full or it's the last page, save the sheet
                 if pages_on_current_sheet == pages_per_sheet or i == len(images) - 1:
@@ -169,22 +236,45 @@ class PDFProcessor:
                     pages_on_current_sheet = 0
             
             # Status: Finalizing layout
-            await self.send_status_message(update, context, "🧪 Applying layout transformation...", ChatAction.TYPING)
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "🧪 Applying layout transformation...")
+            await asyncio.sleep(0.5)
+            
+            # Compress images if needed
+            if len(layout_images) > 20:
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 Compressing images for optimal file size...")
+                layout_images = self.compress_images_for_pdf(layout_images)
             
             # Save layout images to temporary files
             temp_image_paths = []
             for i, img in enumerate(layout_images):
-                temp_img_path = os.path.join(self.temp_dir, f"layout_page_{i}.png")
-                img.save(temp_img_path, "PNG")
+                temp_img_path = os.path.join(self.temp_dir, f"layout_page_{i}.jpg")
+                img.save(temp_img_path, "JPEG", quality=85, optimize=True)
                 temp_image_paths.append(temp_img_path)
             
             # Status: Reassembling PDF
-            await self.send_status_message(update, context, "🧩 Reassembling pages into new PDF...", ChatAction.TYPING)
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "🧩 Reassembling pages into new PDF...")
             
             # Convert images back to PDF
             output_pdf_path = os.path.join(self.temp_dir, f"layout_{layout_type}_{orientation}_output.pdf")
             with open(output_pdf_path, "wb") as f:
                 f.write(img2pdf.convert(temp_image_paths))
+            
+            # Check file size and compress if needed
+            file_size_mb = os.path.getsize(output_pdf_path) / (1024 * 1024)
+            if file_size_mb > 45:
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 File too large, applying additional compression...")
+                layout_images = self.compress_images_for_pdf(layout_images, max_size_mb=45)
+                temp_image_paths = []
+                for i, img in enumerate(layout_images):
+                    temp_img_path = os.path.join(self.temp_dir, f"layout_page_{i}.jpg")
+                    img.save(temp_img_path, "JPEG", quality=60, optimize=True)
+                    temp_image_paths.append(temp_img_path)
+                
+                with open(output_pdf_path, "wb") as f:
+                    f.write(img2pdf.convert(temp_image_paths))
+            
+            # Update final status
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "✅ PDF processing complete!")
             
             return output_pdf_path
             
@@ -218,7 +308,7 @@ Welcome! I can help you process PDF files with the following features:
 3. Choose orientation (portrait/landscape) for layout options
 4. I'll send you back the processed PDF with real-time updates
 
-⚠️ **Note:** Please send PDF files only (max 20MB recommended)
+⚠️ **Note:** Please send PDF files only (max 50MB). Large files will be automatically compressed.
     """
     await update.message.reply_text(welcome_message)
 
@@ -231,21 +321,22 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     document: Document = update.message.document
     
     # Status: File received
-    await processor.send_status_message(update, context, "📥 PDF received. Validating file...", ChatAction.TYPING)
+    status_msg = await processor.send_status_message(update, context, "📥 PDF received. Validating file...", ChatAction.TYPING)
     
     # Status: Checking file type
-    await processor.send_status_message(update, context, "🔍 Checking file type...")
+    await processor.update_status_message(context, status_msg.message_id, update.effective_chat.id, "🔍 Checking file type...")
     
     if not document.file_name.lower().endswith('.pdf'):
-        await update.message.reply_text("❌ Please send a PDF file only.")
+        await processor.update_status_message(context, status_msg.message_id, update.effective_chat.id, "❌ Please send a PDF file only.")
         return
     
     # Store the file info in context for later processing
     context.user_data['pdf_file_id'] = document.file_id
     context.user_data['pdf_file_name'] = document.file_name
     
+    await processor.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"✅ PDF validated: {document.file_name}")
+    
     await update.message.reply_text(
-        f"✅ PDF validated: {document.file_name}\n\n"
         "Now use one of these commands to process it:\n"
         "• `/invert` - Invert colors\n"
         "• `/layout_2in1` - 2-pages-per-sheet\n"
@@ -272,13 +363,18 @@ async def handle_orientation_callback(update: Update, context: ContextTypes.DEFA
     await query.answer()
     
     # Parse callback data
-    _, layout_type, orientation = query.data.split('_')
+    parts = query.data.split('_')
+    if len(parts) != 3:
+        await query.edit_message_text("❌ Invalid selection. Please try again.")
+        return
+    
+    _, layout_type, orientation = parts
     
     # Delete the orientation selection message
     await query.delete_message()
     
     # Process the PDF with selected orientation
-    await process_pdf_with_orientation(query, context, layout_type, orientation)
+    await process_pdf_with_orientation(update, context, layout_type, orientation)
 
 async def process_pdf_with_orientation(update: Update, context: ContextTypes.DEFAULT_TYPE, layout_type: str, orientation: str) -> None:
     """Process PDF with specified layout and orientation"""
@@ -288,7 +384,7 @@ async def process_pdf_with_orientation(update: Update, context: ContextTypes.DEF
     
     try:
         # Status: Starting processing
-        await processor.send_status_message(update, context, f"🔄 Processing your PDF with {layout_type} {orientation} layout...", ChatAction.TYPING)
+        status_msg = await processor.send_status_message(update, context, f"🔄 Processing your PDF with {layout_type} {orientation} layout...", ChatAction.TYPING)
         
         # Download the file
         file = await context.bot.get_file(context.user_data['pdf_file_id'])
@@ -302,7 +398,8 @@ async def process_pdf_with_orientation(update: Update, context: ContextTypes.DEF
         operation_text = f"{layout_type} {orientation} layout"
         
         # Status: Uploading
-        await processor.send_status_message(update, context, "📤 Uploading your new PDF...", ChatAction.UPLOAD_DOCUMENT)
+        await processor.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📤 Uploading your new PDF...")
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
         
         # Send the processed PDF back
         original_name = context.user_data['pdf_file_name']
@@ -335,7 +432,7 @@ async def process_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, operat
     try:
         if operation == "invert":
             # Status: Starting processing
-            await processor.send_status_message(update, context, "🔄 Processing your PDF for color inversion...", ChatAction.TYPING)
+            status_msg = await processor.send_status_message(update, context, "🔄 Processing your PDF for color inversion...", ChatAction.TYPING)
             
             # Download the file
             file = await context.bot.get_file(context.user_data['pdf_file_id'])
@@ -349,7 +446,8 @@ async def process_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, operat
             operation_text = "inverted"
             
             # Status: Uploading
-            await processor.send_status_message(update, context, "📤 Uploading your new PDF...", ChatAction.UPLOAD_DOCUMENT)
+            await processor.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📤 Uploading your new PDF...")
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
             
             # Send the processed PDF back
             original_name = context.user_data['pdf_file_name']
