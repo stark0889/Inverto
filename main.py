@@ -282,6 +282,147 @@ class PDFProcessor:
             logger.error(f"Error creating layout PDF: {e}")
             raise
 
+    async def invert_and_layout_pdf(self, update: Update, context: ContextTypes.DEFAULT_TYPE, pdf_path: str, layout_type: str, orientation: str = "portrait") -> str:
+        """Invert colors and create layout PDF in one operation"""
+        try:
+            # Status: Starting conversion
+            status_msg = await self.send_status_message(update, context, "📄 Extracting pages from PDF...", ChatAction.TYPING)
+            
+            # Convert PDF to images
+            images = convert_from_path(pdf_path, dpi=150)
+            
+            # Status: Pages detected
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🔢 Total pages detected: {len(images)}")
+            await asyncio.sleep(0.5)
+            
+            # Step 1: Invert colors
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🎨 Inverting colors: 0/{len(images)} pages...")
+            
+            inverted_images = []
+            for i, image in enumerate(images):
+                # Convert to RGB if not already
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+                
+                # Invert colors
+                inverted_image = ImageOps.invert(image)
+                inverted_images.append(inverted_image)
+                
+                # Update progress every 10 pages or for small PDFs every 5 pages
+                update_interval = 5 if len(images) <= 50 else 10
+                if (i + 1) % update_interval == 0 or i == len(images) - 1:
+                    await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"🎨 Inverting colors: {i + 1}/{len(images)} pages...")
+            
+            # Step 2: Create layout
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"📐 Creating {layout_type} layout in {orientation} orientation...")
+            await asyncio.sleep(0.5)
+            
+            # Define layout configurations
+            layout_configs = {
+                "2in1": {"pages": 2, "cols": 2, "rows": 1},
+                "4in1": {"pages": 4, "cols": 2, "rows": 2},
+                "6in1": {"pages": 6, "cols": 3, "rows": 2},
+                "9in1": {"pages": 9, "cols": 3, "rows": 3},
+                "12in1": {"pages": 12, "cols": 4, "rows": 3},
+                "16in1": {"pages": 16, "cols": 4, "rows": 4}
+            }
+            
+            if layout_type not in layout_configs:
+                raise ValueError(f"Unsupported layout type: {layout_type}")
+            
+            config = layout_configs[layout_type]
+            pages_per_sheet = config["pages"]
+            
+            # Determine grid based on orientation
+            if orientation == "landscape":
+                grid_cols, grid_rows = config["rows"], config["cols"]
+                # A4 landscape dimensions
+                a4_width, a4_height = 1754, 1240
+            else:  # portrait
+                grid_cols, grid_rows = config["cols"], config["rows"]
+                # A4 portrait dimensions
+                a4_width, a4_height = 1240, 1754
+            
+            # Calculate dimensions for each page on the sheet
+            page_width = a4_width // grid_cols
+            page_height = a4_height // grid_rows
+            
+            layout_images = []
+            current_sheet = Image.new('RGB', (a4_width, a4_height), 'white')
+            pages_on_current_sheet = 0
+            
+            for i, image in enumerate(inverted_images):
+                # Resize image to fit in the allocated space
+                image.thumbnail((page_width, page_height), Image.Resampling.LANCZOS)
+                
+                # Calculate position on the sheet
+                col = pages_on_current_sheet % grid_cols
+                row = pages_on_current_sheet // grid_cols
+                
+                x = col * page_width + (page_width - image.width) // 2
+                y = row * page_height + (page_height - image.height) // 2
+                
+                # Paste the image onto the current sheet
+                current_sheet.paste(image, (x, y))
+                pages_on_current_sheet += 1
+                
+                # Update progress every 20 pages
+                if (i + 1) % 20 == 0 or i == len(inverted_images) - 1:
+                    await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, f"📐 Processing layout: {i + 1}/{len(inverted_images)} pages...")
+                
+                # If sheet is full or it's the last page, save the sheet
+                if pages_on_current_sheet == pages_per_sheet or i == len(inverted_images) - 1:
+                    layout_images.append(current_sheet.copy())
+                    current_sheet = Image.new('RGB', (a4_width, a4_height), 'white')
+                    pages_on_current_sheet = 0
+            
+            # Status: Finalizing
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "🧪 Applying transformations...")
+            await asyncio.sleep(0.5)
+            
+            # Compress images if needed
+            if len(layout_images) > 20:
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 Compressing images for optimal file size...")
+                layout_images = self.compress_images_for_pdf(layout_images)
+            
+            # Save layout images to temporary files
+            temp_image_paths = []
+            for i, img in enumerate(layout_images):
+                temp_img_path = os.path.join(self.temp_dir, f"inverted_layout_page_{i}.jpg")
+                img.save(temp_img_path, "JPEG", quality=85, optimize=True)
+                temp_image_paths.append(temp_img_path)
+            
+            # Status: Reassembling PDF
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "🧩 Reassembling pages into new PDF...")
+            
+            # Convert images back to PDF
+            output_pdf_path = os.path.join(self.temp_dir, f"inverted_{layout_type}_{orientation}_output.pdf")
+            with open(output_pdf_path, "wb") as f:
+                f.write(img2pdf.convert(temp_image_paths))
+            
+            # Check file size and compress if needed
+            file_size_mb = os.path.getsize(output_pdf_path) / (1024 * 1024)
+            if file_size_mb > 45:
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 File too large, applying additional compression...")
+                layout_images = self.compress_images_for_pdf(layout_images, max_size_mb=45)
+                temp_image_paths = []
+                for i, img in enumerate(layout_images):
+                    temp_img_path = os.path.join(self.temp_dir, f"inverted_layout_page_{i}.jpg")
+                    img.save(temp_img_path, "JPEG", quality=60, optimize=True)
+                    temp_image_paths.append(temp_img_path)
+                
+                with open(output_pdf_path, "wb") as f:
+                    f.write(img2pdf.convert(temp_image_paths))
+            
+            # Update final status
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "✅ PDF processing complete!")
+            
+            return output_pdf_path
+            
+        except Exception as e:
+            logger.error(f"Error creating inverted layout PDF: {e}")
+            raise
+
 # Global processor instance
 processor = PDFProcessor()
 
@@ -300,13 +441,15 @@ Welcome! I can help you process PDF files with the following features:
 • `/layout_9in1` - Convert to 9-pages-per-sheet layout
 • `/layout_12in1` - Convert to 12-pages-per-sheet layout
 • `/layout_16in1` - Convert to 16-pages-per-sheet layout
+• `/process` - Choose processing options interactively
 • `/help` - Show this help message
 
 📋 **How to use:**
 1. Send me a PDF file
 2. Use one of the commands above to process it
-3. Choose orientation (portrait/landscape) for layout options
-4. I'll send you back the processed PDF with real-time updates
+3. For layout options, choose orientation (portrait/landscape)
+4. For `/process`, select features interactively
+5. I'll send you back the processed PDF with real-time updates
 
 ⚠️ **Note:** Please send PDF files only (max 50MB). Large files will be automatically compressed.
     """
@@ -344,37 +487,191 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "• `/layout_6in1` - 6-pages-per-sheet\n"
         "• `/layout_9in1` - 9-pages-per-sheet\n"
         "• `/layout_12in1` - 12-pages-per-sheet\n"
-        "• `/layout_16in1` - 16-pages-per-sheet"
+        "• `/layout_16in1` - 16-pages-per-sheet\n"
+        "• `/process` - Interactive processing options"
     )
 
-async def create_orientation_keyboard(layout_type: str):
-    """Create inline keyboard for orientation selection"""
+async def create_feature_selection_keyboard():
+    """Create inline keyboard for feature selection"""
     keyboard = [
         [
-            InlineKeyboardButton("📱 Portrait", callback_data=f"orient_{layout_type}_portrait"),
-            InlineKeyboardButton("📄 Landscape", callback_data=f"orient_{layout_type}_landscape")
+            InlineKeyboardButton("🎨 Invert Colors Only", callback_data="feature_invert"),
+            InlineKeyboardButton("📐 Layout Only", callback_data="feature_layout")
+        ],
+        [
+            InlineKeyboardButton("🎨📐 Invert + Layout", callback_data="feature_invert_layout")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+async def create_layout_selection_keyboard():
+    """Create inline keyboard for layout selection"""
+    keyboard = [
+        [
+            InlineKeyboardButton("2-in-1", callback_data="layout_2in1"),
+            InlineKeyboardButton("4-in-1", callback_data="layout_4in1"),
+            InlineKeyboardButton("6-in-1", callback_data="layout_6in1")
+        ],
+        [
+            InlineKeyboardButton("9-in-1", callback_data="layout_9in1"),
+            InlineKeyboardButton("12-in-1", callback_data="layout_12in1"),
+            InlineKeyboardButton("16-in-1", callback_data="layout_16in1")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def create_orientation_keyboard(layout_type: str, feature_type: str = "layout"):
+    """Create inline keyboard for orientation selection"""
+    keyboard = [
+        [
+            InlineKeyboardButton("📱 Portrait", callback_data=f"orient_{feature_type}_{layout_type}_portrait"),
+            InlineKeyboardButton("📄 Landscape", callback_data=f"orient_{feature_type}_{layout_type}_landscape")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def handle_feature_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle feature selection callback"""
+    query = update.callback_query
+    await query.answer()
+    
+    feature = query.data.split('_')[1]  # feature_invert -> invert
+    
+    if feature == "invert":
+        # Delete the feature selection message
+        await query.delete_message()
+        # Process invert directly
+        await process_pdf(update, context, "invert")
+    
+    elif feature == "layout":
+        # Show layout selection
+        keyboard = await create_layout_selection_keyboard()
+        await query.edit_message_text(
+            "📐 Choose layout option:",
+            reply_markup=keyboard
+        )
+    
+    elif feature == "invert_layout":
+        if len(query.data.split('_')) > 2 and query.data.split('_')[2] == "layout":
+            # This is invert+layout
+            keyboard = await create_layout_selection_keyboard()
+            await query.edit_message_text(
+                "🎨📐 Choose layout for invert + layout processing:",
+                reply_markup=keyboard
+            )
+            # Store that this is an invert+layout operation
+            context.user_data['operation_type'] = 'invert_layout'
+
+async def handle_layout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle layout selection callback"""
+    query = update.callback_query
+    await query.answer()
+    
+    layout_type = query.data.split('_')[1]  # layout_2in1 -> 2in1
+    
+    # Check if this is part of an invert+layout operation
+    operation_type = context.user_data.get('operation_type', 'layout')
+    
+    # Show orientation selection
+    keyboard = await create_orientation_keyboard(layout_type, operation_type)
+    await query.edit_message_text(
+        f"📐 Choose orientation for {layout_type}:",
+        reply_markup=keyboard
+    )
 
 async def handle_orientation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle orientation selection callback"""
     query = update.callback_query
     await query.answer()
     
-    # Parse callback data
+    # Parse callback data: orient_layout_2in1_portrait or orient_invert_layout_2in1_portrait
     parts = query.data.split('_')
-    if len(parts) != 3:
+    if len(parts) < 4:
         await query.edit_message_text("❌ Invalid selection. Please try again.")
         return
     
-    _, layout_type, orientation = parts
+    if parts[1] == "invert" and parts[2] == "layout":
+        # This is invert+layout: orient_invert_layout_2in1_portrait
+        operation_type = "invert_layout"
+        layout_type = parts[3]
+        orientation = parts[4]
+    else:
+        # This is regular layout: orient_layout_2in1_portrait
+        operation_type = parts[1]
+        layout_type = parts[2]
+        orientation = parts[3]
     
     # Delete the orientation selection message
     await query.delete_message()
     
-    # Process the PDF with selected orientation
-    await process_pdf_with_orientation(update, context, layout_type, orientation)
+    # Process the PDF with selected options
+    if operation_type == "invert_layout":
+        await process_invert_layout_pdf(update, context, layout_type, orientation)
+    else:
+        await process_pdf_with_orientation(update, context, layout_type, orientation)
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle all callback queries"""
+    query = update.callback_query
+    callback_data = query.data
+    
+    if callback_data.startswith("feature_"):
+        await handle_feature_callback(update, context)
+    elif callback_data.startswith("layout_"):
+        await handle_layout_callback(update, context)
+    elif callback_data.startswith("orient_"):
+        await handle_orientation_callback(update, context)
+
+async def process_invert_layout_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, layout_type: str, orientation: str) -> None:
+    """Process PDF with invert + layout combination"""
+    if 'pdf_file_id' not in context.user_data:
+        await update.effective_message.reply_text("❌ Please send a PDF file first.")
+        return
+    
+    try:
+        # Status: Starting processing
+        status_msg = await processor.send_status_message(update, context, f"🔄 Processing your PDF with color inversion + {layout_type} {orientation} layout...", ChatAction.TYPING)
+        
+        # Download the file
+        file = await context.bot.get_file(context.user_data['pdf_file_id'])
+        
+        # Create temporary file for input PDF
+        input_pdf_path = os.path.join(processor.temp_dir, "input.pdf")
+        await file.download_to_drive(input_pdf_path)
+        
+        # Process the PDF with invert + layout
+        output_pdf_path = await processor.invert_and_layout_pdf(update, context, input_pdf_path, layout_type, orientation)
+        operation_text = f"inverted {layout_type} {orientation} layout"
+        
+        # Status: Uploading
+        await processor.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📤 Uploading your new PDF...")
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+        
+        # Send the processed PDF back
+        original_name = context.user_data['pdf_file_name']
+        output_name = f"inverted_{layout_type}_{orientation}_{original_name}"
+        
+        with open(output_pdf_path, 'rb') as f:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=f,
+                filename=output_name,
+                caption=f"✅ Done! Your {operation_text} PDF is ready."
+            )
+        
+        # Clean up temporary files and user data
+        if os.path.exists(input_pdf_path):
+            os.remove(input_pdf_path)
+        if os.path.exists(output_pdf_path):
+            os.remove(output_pdf_path)
+        
+        # Clear operation type
+        if 'operation_type' in context.user_data:
+            del context.user_data['operation_type']
+            
+    except Exception as e:
+        logger.error(f"Error processing PDF: {e}")
+        await update.effective_message.reply_text(f"❌ Error processing PDF: {str(e)}")
 
 async def process_pdf_with_orientation(update: Update, context: ContextTypes.DEFAULT_TYPE, layout_type: str, orientation: str) -> None:
     """Process PDF with specified layout and orientation"""
@@ -423,6 +720,19 @@ async def process_pdf_with_orientation(update: Update, context: ContextTypes.DEF
         logger.error(f"Error processing PDF: {e}")
         await update.effective_message.reply_text(f"❌ Error processing PDF: {str(e)}")
 
+async def process_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /process command for interactive feature selection"""
+    if 'pdf_file_id' not in context.user_data:
+        await update.message.reply_text("❌ Please send a PDF file first.")
+        return
+    
+    # Show feature selection
+    keyboard = await create_feature_selection_keyboard()
+    await update.message.reply_text(
+        "🔧 Choose processing options for your PDF:",
+        reply_markup=keyboard
+    )
+
 async def process_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, operation: str) -> None:
     """Process PDF with the specified operation."""
     if 'pdf_file_id' not in context.user_data:
@@ -469,7 +779,7 @@ async def process_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, operat
                 
         elif operation in ["2in1", "4in1", "6in1", "9in1", "12in1", "16in1"]:
             # Show orientation selection for layout operations
-            keyboard = await create_orientation_keyboard(operation)
+            keyboard = await create_orientation_keyboard(operation, "layout")
             await update.message.reply_text(
                 f"📐 Choose orientation for {operation} layout:",
                 reply_markup=keyboard
@@ -530,6 +840,7 @@ def main() -> None:
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("process", process_command))
     application.add_handler(CommandHandler("invert", invert_command))
     application.add_handler(CommandHandler("layout_2in1", layout_2in1_command))
     application.add_handler(CommandHandler("layout_4in1", layout_4in1_command))
@@ -538,7 +849,7 @@ def main() -> None:
     application.add_handler(CommandHandler("layout_12in1", layout_12in1_command))
     application.add_handler(CommandHandler("layout_16in1", layout_16in1_command))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    application.add_handler(CallbackQueryHandler(handle_orientation_callback, pattern="^orient_"))
+    application.add_handler(CallbackQueryHandler(handle_callback_query))
     
     # Add error handler
     application.add_error_handler(error_handler)
