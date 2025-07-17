@@ -1,0 +1,9 @@
+nohup: ignoring input
+2025-07-17 03:50:50,433 - main - INFO - Starting PDF Processing Bot...
+2025-07-17 03:50:50,722 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getMe "HTTP/1.1 200 OK"
+2025-07-17 03:50:50,822 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/deleteWebhook "HTTP/1.1 200 OK"
+2025-07-17 03:50:50,823 - telegram.ext.Application - INFO - Application started
+2025-07-17 03:51:01,112 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
+2025-07-17 03:51:11,207 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
+2025-07-17 03:51:21,312 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
+2025-07-17 03:51:31,408 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
