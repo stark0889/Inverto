@@ -130,3 +130,7 @@ nohup: ignoring input
 2025-07-17 04:06:17,649 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
 2025-07-17 04:06:27,745 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
 2025-07-17 04:06:37,839 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
+2025-07-17 04:06:47,935 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
+2025-07-17 04:06:56,866 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7598007399:AAG8Zs_E8iifjnUGdyRWqpfcQKHyQV4tIkw/getUpdates "HTTP/1.1 200 OK"
+2025-07-17 04:06:56,867 - telegram.ext.Application - INFO - Application is stopping. This might take a moment.
+2025-07-17 04:06:56,867 - telegram.ext.Application - INFO - Application.stop() complete
