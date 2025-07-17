@@ -52,17 +52,17 @@ class PDFProcessor:
             logger.warning(f"Failed to update status message: {e}")
     
     def compress_images_for_pdf(self, images, max_size_mb=20):
-        """Compress images to fit within file size limit while preserving quality"""
-        # Use much higher quality settings to preserve original quality
-        num_pages = len(images)
-        if num_pages > 200:
-            quality = 85  # High quality even for large PDFs
-        elif num_pages > 100:
-            quality = 90  # Very high quality
-        elif num_pages > 50:
-            quality = 95  # Near-lossless quality
-        else:
-            quality = 98  # Almost lossless for small PDFs
+        """Only compress if absolutely necessary to fit within Telegram limits"""
+        # Only compress if we absolutely must due to file size limits
+        # First, check if we even need compression
+        estimated_size = len(images) * 1.5  # Rough estimate for high quality
+        
+        if estimated_size <= max_size_mb:
+            # No compression needed - return original images
+            return images
+        
+        # Only if file would be too large, apply minimal compression
+        logger.info(f"File size estimated at {estimated_size}MB, applying minimal compression")
         
         compressed_images = []
         for image in images:
@@ -70,9 +70,9 @@ class PDFProcessor:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Use high-quality JPEG compression with progressive encoding
+            # Use very high quality JPEG - minimal compression
             output = BytesIO()
-            image.save(output, format='JPEG', quality=quality, optimize=True, progressive=True)
+            image.save(output, format='JPEG', quality=98, optimize=True, progressive=True)
             output.seek(0)
             compressed_image = Image.open(output)
             compressed_images.append(compressed_image)
@@ -99,25 +99,26 @@ class PDFProcessor:
         return file_path
 
     async def convert_pdf_to_images_safely(self, pdf_path: str, status_msg, update, context):
-        """Safely convert PDF to images with error handling and DPI optimization"""
+        """Safely convert PDF to images with high quality and no compression"""
         try:
-            # Check file size first
+            # Use high DPI for best quality - same as original PDF
             file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
-            if file_size_mb > 10:  # For large files, use lower DPI
-                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📄 Large file detected, optimizing processing...")
-                images = convert_from_path(pdf_path, dpi=150)
-            else:
+            if file_size_mb > 20:  # Only for very large files
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📄 Large file detected, using optimized quality...")
                 images = convert_from_path(pdf_path, dpi=200)
+            else:
+                # Use high DPI for best quality
+                images = convert_from_path(pdf_path, dpi=300)
             return images
         except Exception as e:
             logger.error(f"Error converting PDF: {e}")
-            # Fallback to lower DPI if any issues
-            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "⚠️ Adjusting quality for better compatibility...")
+            # Fallback to medium DPI if any issues
+            await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "⚠️ Adjusting processing for compatibility...")
             try:
-                images = convert_from_path(pdf_path, dpi=150)
+                images = convert_from_path(pdf_path, dpi=200)
                 return images
             except Exception as e2:
-                logger.error(f"Error converting PDF at 150 DPI: {e2}")
+                logger.error(f"Error converting PDF at 200 DPI: {e2}")
                 await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "❌ Error processing PDF. File may be corrupted or too complex.")
                 raise Exception("Unable to process PDF file")
     
@@ -162,11 +163,11 @@ class PDFProcessor:
                 await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 Compressing images for optimal file size...")
                 inverted_images = self.compress_images_for_pdf(inverted_images)
             
-            # Save inverted images to temporary files with high quality
+            # Save inverted images to temporary files with maximum quality (PNG lossless)
             temp_image_paths = []
             for i, img in enumerate(inverted_images):
-                temp_img_path = os.path.join(self.temp_dir, f"inverted_page_{i}.jpg")
-                img.save(temp_img_path, "JPEG", quality=95, optimize=True, progressive=True)
+                temp_img_path = os.path.join(self.temp_dir, f"inverted_page_{i}.png")
+                img.save(temp_img_path, "PNG", optimize=True)
                 temp_image_paths.append(temp_img_path)
             
             # Status: Reassembling PDF
@@ -181,12 +182,12 @@ class PDFProcessor:
             file_size_mb = os.path.getsize(output_pdf_path) / (1024 * 1024)
             if file_size_mb > 45:  # Telegram limit is 50MB, leave some buffer
                 await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 File too large, applying additional compression...")
-                # Apply more aggressive compression while preserving quality
+                # Apply minimal compression only if absolutely necessary
                 inverted_images = self.compress_images_for_pdf(inverted_images, max_size_mb=45)
                 temp_image_paths = []
                 for i, img in enumerate(inverted_images):
-                    temp_img_path = os.path.join(self.temp_dir, f"inverted_page_{i}.jpg")
-                    img.save(temp_img_path, "JPEG", quality=80, optimize=True, progressive=True)
+                    temp_img_path = os.path.join(self.temp_dir, f"inverted_page_{i}.png")
+                    img.save(temp_img_path, "PNG", optimize=True)
                     temp_image_paths.append(temp_img_path)
                 
                 with open(output_pdf_path, "wb") as f:
@@ -281,16 +282,13 @@ class PDFProcessor:
             await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "🧪 Applying layout transformation...")
             await asyncio.sleep(0.5)
             
-            # Compress images if needed
-            if len(layout_images) > 20:
-                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 Compressing images for optimal file size...")
-                layout_images = self.compress_images_for_pdf(layout_images)
+            # Skip automatic compression - preserve original quality for best output
             
-            # Save layout images to temporary files with high quality
+            # Save layout images to temporary files with maximum quality (PNG lossless)
             temp_image_paths = []
             for i, img in enumerate(layout_images):
-                temp_img_path = os.path.join(self.temp_dir, f"layout_page_{i}.jpg")
-                img.save(temp_img_path, "JPEG", quality=95, optimize=True, progressive=True)
+                temp_img_path = os.path.join(self.temp_dir, f"layout_page_{i}.png")
+                img.save(temp_img_path, "PNG", optimize=True)
                 temp_image_paths.append(temp_img_path)
             
             # Status: Reassembling PDF
@@ -304,12 +302,12 @@ class PDFProcessor:
             # Check file size and compress if needed
             file_size_mb = os.path.getsize(output_pdf_path) / (1024 * 1024)
             if file_size_mb > 45:
-                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 File too large, applying additional compression...")
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 File too large, applying minimal compression...")
                 layout_images = self.compress_images_for_pdf(layout_images, max_size_mb=45)
                 temp_image_paths = []
                 for i, img in enumerate(layout_images):
-                    temp_img_path = os.path.join(self.temp_dir, f"layout_page_{i}.jpg")
-                    img.save(temp_img_path, "JPEG", quality=80, optimize=True, progressive=True)
+                    temp_img_path = os.path.join(self.temp_dir, f"layout_page_{i}.png")
+                    img.save(temp_img_path, "PNG", optimize=True)
                     temp_image_paths.append(temp_img_path)
                 
                 with open(output_pdf_path, "wb") as f:
@@ -422,16 +420,13 @@ class PDFProcessor:
             await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "🧪 Applying transformations...")
             await asyncio.sleep(0.5)
             
-            # Compress images if needed
-            if len(layout_images) > 20:
-                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 Compressing images for optimal file size...")
-                layout_images = self.compress_images_for_pdf(layout_images)
+            # Skip automatic compression - preserve original quality for best output
             
-            # Save layout images to temporary files with high quality
+            # Save layout images to temporary files with maximum quality (PNG lossless)
             temp_image_paths = []
             for i, img in enumerate(layout_images):
-                temp_img_path = os.path.join(self.temp_dir, f"inverted_layout_page_{i}.jpg")
-                img.save(temp_img_path, "JPEG", quality=95, optimize=True, progressive=True)
+                temp_img_path = os.path.join(self.temp_dir, f"inverted_layout_page_{i}.png")
+                img.save(temp_img_path, "PNG", optimize=True)
                 temp_image_paths.append(temp_img_path)
             
             # Status: Reassembling PDF
@@ -445,12 +440,12 @@ class PDFProcessor:
             # Check file size and compress if needed
             file_size_mb = os.path.getsize(output_pdf_path) / (1024 * 1024)
             if file_size_mb > 45:
-                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 File too large, applying additional compression...")
+                await self.update_status_message(context, status_msg.message_id, update.effective_chat.id, "📉 File too large, applying minimal compression...")
                 layout_images = self.compress_images_for_pdf(layout_images, max_size_mb=45)
                 temp_image_paths = []
                 for i, img in enumerate(layout_images):
-                    temp_img_path = os.path.join(self.temp_dir, f"inverted_layout_page_{i}.jpg")
-                    img.save(temp_img_path, "JPEG", quality=80, optimize=True, progressive=True)
+                    temp_img_path = os.path.join(self.temp_dir, f"inverted_layout_page_{i}.png")
+                    img.save(temp_img_path, "PNG", optimize=True)
                     temp_image_paths.append(temp_img_path)
                 
                 with open(output_pdf_path, "wb") as f:
